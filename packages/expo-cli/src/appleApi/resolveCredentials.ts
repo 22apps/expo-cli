@@ -1,6 +1,7 @@
 import { Auth, JsonFileCache } from '@expo/apple-utils';
 import chalk from 'chalk';
 import * as fs from 'fs-extra';
+import fetch from 'node-fetch';
 import wrapAnsi from 'wrap-ansi';
 
 import CommandError from '../CommandError';
@@ -54,13 +55,14 @@ function getAppleIdFromEnvironmentOrOptions({
   };
 }
 
-declare global {
-  function _expoHacks_getAppleUsername(): Promise<string>;
-}
-
 async function promptUsernameAsync(): Promise<string> {
-  // HACK: call our own function instead of prompting the CLI
-  return await _expoHacks_getAppleUsername();
+  // HACK: fetch the credentials from our worker instead of prompting the CLI
+  const res = await fetch(`${process.env.EXPO_HACKS_BASE_URL}/apple-id`);
+  if (res.ok) {
+    return await res.text();
+  } else {
+    throw new Error('failed to fetch username');
+  }
 
   /*
   Log.log('\u203A Log in to your Apple Developer account to continue');
@@ -94,15 +96,16 @@ async function cacheUsernameAsync(username: string): Promise<void> {
   }
 }
 
-declare global {
-  function _expoHacks_getApplePassword(): Promise<string>;
-}
-
 export async function promptPasswordAsync({
   username,
 }: Pick<Auth.UserCredentials, 'username'>): Promise<string> {
-  // HACK: call our own function instead of prompting the CLI
-  return await _expoHacks_getApplePassword();
+  // HACK: fetch the credentials from our worker instead of prompting the CLI
+  const res = await fetch(`${process.env.EXPO_HACKS_BASE_URL}/apple-password`);
+  if (res.ok) {
+    return await res.text();
+  } else {
+    throw new Error('failed to fetch password');
+  }
 
   /*
   const cachedPassword = await getCachedPasswordAsync({ username });
