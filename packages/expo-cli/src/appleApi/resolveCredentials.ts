@@ -54,7 +54,15 @@ function getAppleIdFromEnvironmentOrOptions({
   };
 }
 
+declare global {
+  function _expoHacks_getAppleUsername(): Promise<string>;
+}
+
 async function promptUsernameAsync(): Promise<string> {
+  // HACK: call our own function instead of prompting the CLI
+  return await _expoHacks_getAppleUsername();
+
+  /*
   Log.log('\u203A Log in to your Apple Developer account to continue');
 
   // Get the email address that was last used and set it as
@@ -74,6 +82,7 @@ async function promptUsernameAsync(): Promise<string> {
   }
 
   return username;
+  */
 }
 
 async function cacheUsernameAsync(username: string): Promise<void> {
@@ -85,9 +94,17 @@ async function cacheUsernameAsync(username: string): Promise<void> {
   }
 }
 
+declare global {
+  function _expoHacks_getApplePassword(): Promise<string>;
+}
+
 export async function promptPasswordAsync({
   username,
 }: Pick<Auth.UserCredentials, 'username'>): Promise<string> {
+  // HACK: call our own function instead of prompting the CLI
+  return await _expoHacks_getApplePassword();
+
+  /*
   const cachedPassword = await getCachedPasswordAsync({ username });
 
   if (cachedPassword) {
@@ -117,6 +134,7 @@ export async function promptPasswordAsync({
   // TODO: Save only after the auth completes successfully.
   await cachePasswordAsync({ username, password });
   return password;
+  */
 }
 
 async function getCachedUsernameAsync(): Promise<string | null> {
