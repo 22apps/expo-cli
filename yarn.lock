@@ -1526,7 +1526,7 @@
 
 "@expo/apple-utils@https://github.com/jamiesyme/expo-apple-utils.git":
   version "0.0.0-alpha.25"
-  resolved "https://github.com/jamiesyme/expo-apple-utils.git#54e979440e843ab0420bd8f12932b99257733caf"
+  resolved "https://github.com/jamiesyme/expo-apple-utils.git#deff01b37687bf24c6be7b827c1c8c1314db497f"
   dependencies:
     node-fetch "^2.6.2"
 
