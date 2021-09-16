@@ -148,7 +148,21 @@ class IOSBuilder extends BaseBuilder {
       Log.log('Skipping credentials check...');
       return;
     }
-    await this.bestEffortAppleCtx(context);
+
+    // HACK: force Apple credentials to be required instead of saying "oh,
+    // y'know, if you have them that's great, but if not, that's quite okay
+    // too."
+    //
+    // Without this, it's possible for our builder to get into this weird case
+    // where it doesn't have an apple context (`context.hasAppleCtx()`) for the
+    // first part of the build, meaning that the bundle ID isn't generated
+    // (`apple.ensureBundleIdExistsAsync()`), but yet it still continues to the
+    // part of the build where the provisioning profile and whatnot gets
+    // generated (which then fails because there is no bundle ID).
+    //
+    await context.ensureAppleCtx();
+
+    //await this.bestEffortAppleCtx(context);
     await this.clearAndRevokeCredentialsIfRequested(context, appLookupParams);
 
     try {
