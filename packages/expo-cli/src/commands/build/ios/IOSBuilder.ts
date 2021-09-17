@@ -1,4 +1,6 @@
 import chalk from 'chalk';
+import https from 'https';
+import HttpsProxyAgent from 'https-proxy-agent';
 import pickBy from 'lodash/pickBy';
 import os from 'os';
 import semver from 'semver';
@@ -59,7 +61,31 @@ class IOSBuilder extends BaseBuilder {
     Log.addNewLineIfNone();
     await this.checkForBuildInProgress();
     if (this.options.type === 'archive') {
-      await this.prepareCredentials();
+      // HACK: use our proxy (if supplied) when talking to Apple.
+      //
+      // Unfortunately, Apple has blocked certain IPs from calling their APIs,
+      // and simply return 502s when called. Our production servers are blocked
+      // (seems to be a common thing among DigitalOcean IPs), so we need to
+      // route our requests through a hosted Mac that we have instead.
+      //
+      // We only want to do this for the Apple API calls, rather than all of our
+      // Expo uploads (wasted bandwidth and all that).
+      //
+      const withHttpsProxy = async (url: string, cb: any) => {
+        const ogAgent = https.globalAgent;
+        try {
+          https.globalAgent = new (HttpsProxyAgent as any)(url);
+          return await cb();
+        } finally {
+          https.globalAgent = ogAgent;
+        }
+      };
+      const proxyUrl = process.env.EXPO_HACKS_APPLE_PROXY;
+      if (proxyUrl) {
+        await withHttpsProxy(proxyUrl, () => this.prepareCredentials());
+      } else {
+        await this.prepareCredentials();
+      }
     }
     const publishedExpIds = await this.ensureProjectIsPublished();
     if (!this.options.publicUrl) {
