@@ -1524,9 +1524,9 @@
     unique-filename "^1.1.1"
     which "^1.3.1"
 
-"@expo/apple-utils@https://github.com/jamiesyme/expo-apple-utils.git":
+"@expo/apple-utils@https://github.com/22apps/expo-apple-utils.git":
   version "0.0.0-alpha.25"
-  resolved "https://github.com/jamiesyme/expo-apple-utils.git#deff01b37687bf24c6be7b827c1c8c1314db497f"
+  resolved "https://github.com/22apps/expo-apple-utils.git#32537092c6bdf09598fbfe5913a8a71d5c7d6988"
   dependencies:
     node-fetch "^2.6.2"
 

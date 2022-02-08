@@ -66,7 +66,7 @@
   },
   "dependencies": {
     "@babel/runtime": "7.9.0",
-    "@expo/apple-utils": "https://github.com/jamiesyme/expo-apple-utils.git",
+    "@expo/apple-utils": "https://github.com/22apps/expo-apple-utils.git",
     "@expo/bunyan": "4.0.0",
     "@expo/config": "5.0.9",
     "@expo/config-plugins": "3.1.0",
