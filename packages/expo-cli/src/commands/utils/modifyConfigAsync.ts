@@ -1,4 +1,5 @@
 import { ExpoConfig, modifyConfigAsync } from '@expo/config';
+import chalk from 'chalk';
 
 import { SilentError } from '../../CommandError';
 import Log from '../../log';
@@ -20,9 +21,8 @@ export async function attemptModification(
 
 function logNoConfig() {
   Log.log(
-    Log.chalk.yellow(
-      `No Expo config was found. Please create an Expo config (${Log.chalk.bold`app.json`} or ${Log
-        .chalk.bold`app.config.js`}) in your project root.`
+    chalk.yellow(
+      `No Expo config was found. Please create an Expo config (${chalk.bold`app.json`} or ${chalk.bold`app.config.js`}) in your project root.`
     )
   );
 }
@@ -35,10 +35,11 @@ export async function attemptAddingPluginsAsync(
   if (!plugins.length) return;
 
   const edits = {
-    plugins: (exp.plugins || []).concat(plugins),
+    plugins: [...new Set((exp.plugins || []).concat(plugins))],
   };
   const modification = await modifyConfigAsync(projectRoot, edits, {
     skipSDKVersionRequirement: true,
+    skipPlugins: true,
   });
   if (modification.type === 'success') {
     Log.log(`\u203A Added config plugin${plugins.length === 1 ? '' : 's'}: ${plugins.join(', ')}`);
@@ -54,7 +55,7 @@ export function warnAboutConfigAndThrow(type: string, message: string, edits: Pa
   Log.addNewLineIfNone();
   if (type === 'warn') {
     // The project is using a dynamic config, give the user a helpful log and bail out.
-    Log.log(Log.chalk.yellow(message));
+    Log.log(chalk.yellow(message));
   } else {
     logNoConfig();
   }
@@ -64,7 +65,7 @@ export function warnAboutConfigAndThrow(type: string, message: string, edits: Pa
 }
 
 function notifyAboutManualConfigEdits(edits: Partial<ExpoConfig>) {
-  Log.log(Log.chalk.cyan(`Please add the following to your Expo config`));
+  Log.log(chalk.cyan(`Please add the following to your Expo config`));
   Log.newLine();
   Log.log(JSON.stringify(edits, null, 2));
   Log.newLine();

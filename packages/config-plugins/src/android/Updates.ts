@@ -1,12 +1,19 @@
 import path from 'path';
 import resolveFrom from 'resolve-from';
+import semver from 'semver';
 
 import { ConfigPlugin } from '../Plugin.types';
 import { withAndroidManifest } from '../plugins/android-plugins';
-import { ExpoConfigUpdates, getUpdateUrl } from '../utils/Updates';
+import {
+  ExpoConfigUpdates,
+  getExpoUpdatesPackageVersion,
+  getRuntimeVersionNullable,
+  getUpdateUrl,
+} from '../utils/Updates';
 import {
   addMetaDataItemToMainApplication,
   AndroidManifest,
+  findMetaDataItem,
   getMainApplicationMetaDataValue,
   getMainApplicationOrThrow,
   removeMetaDataItemFromMainApplication,
@@ -30,16 +37,16 @@ export const withUpdates: ConfigPlugin<{ expoUsername: string | null }> = (
   { expoUsername }
 ) => {
   return withAndroidManifest(config, config => {
-    config.modResults = setUpdatesConfig(config, config.modResults, expoUsername);
+    const expoUpdatesPackageVersion = getExpoUpdatesPackageVersion(config.modRequest.projectRoot);
+    config.modResults = setUpdatesConfig(
+      config,
+      config.modResults,
+      expoUsername,
+      expoUpdatesPackageVersion
+    );
     return config;
   });
 };
-
-export function getRuntimeVersion(
-  config: Pick<ExpoConfigUpdates, 'runtimeVersion'>
-): string | null {
-  return typeof config.runtimeVersion === 'string' ? config.runtimeVersion : null;
-}
 
 export function getSDKVersion(config: Pick<ExpoConfigUpdates, 'sdkVersion'>): string | null {
   return typeof config.sdkVersion === 'string' ? config.sdkVersion : null;
@@ -54,9 +61,14 @@ export function getUpdatesTimeout(config: Pick<ExpoConfigUpdates, 'updates'>): n
 }
 
 export function getUpdatesCheckOnLaunch(
-  config: Pick<ExpoConfigUpdates, 'updates'>
-): 'NEVER' | 'ALWAYS' {
+  config: Pick<ExpoConfigUpdates, 'updates'>,
+  expoUpdatesPackageVersion?: string | null
+): 'NEVER' | 'ERROR_RECOVERY_ONLY' | 'ALWAYS' {
   if (config.updates?.checkAutomatically === 'ON_ERROR_RECOVERY') {
+    // native 'ERROR_RECOVERY_ONLY' option was only introduced in 0.11.x
+    if (expoUpdatesPackageVersion && semver.gte(expoUpdatesPackageVersion, '0.11.0')) {
+      return 'ERROR_RECOVERY_ONLY';
+    }
     return 'NEVER';
   } else if (config.updates?.checkAutomatically === 'ON_LOAD') {
     return 'ALWAYS';
@@ -67,7 +79,8 @@ export function getUpdatesCheckOnLaunch(
 export function setUpdatesConfig(
   config: ExpoConfigUpdates,
   androidManifest: AndroidManifest,
-  username: string | null
+  username: string | null,
+  expoUpdatesPackageVersion?: string | null
 ): AndroidManifest {
   const mainApplication = getMainApplicationOrThrow(androidManifest);
 
@@ -79,7 +92,7 @@ export function setUpdatesConfig(
   addMetaDataItemToMainApplication(
     mainApplication,
     Config.CHECK_ON_LAUNCH,
-    getUpdatesCheckOnLaunch(config)
+    getUpdatesCheckOnLaunch(config, expoUpdatesPackageVersion)
   );
   addMetaDataItemToMainApplication(
     mainApplication,
@@ -103,12 +116,21 @@ export function setVersionsConfig(
 ): AndroidManifest {
   const mainApplication = getMainApplicationOrThrow(androidManifest);
 
-  const runtimeVersion = getRuntimeVersion(config);
+  const runtimeVersion = getRuntimeVersionNullable(config, 'android');
+  if (!runtimeVersion && findMetaDataItem(mainApplication, Config.RUNTIME_VERSION) > -1) {
+    throw new Error(
+      'A runtime version is set in your AndroidManifest.xml, but is missing from your app.json/app.config.js. Please either set runtimeVersion in your app.json/app.config.js or remove expo.modules.updates.EXPO_RUNTIME_VERSION from your AndroidManifest.xml.'
+    );
+  }
   const sdkVersion = getSDKVersion(config);
   if (runtimeVersion) {
     removeMetaDataItemFromMainApplication(mainApplication, Config.SDK_VERSION);
     addMetaDataItemToMainApplication(mainApplication, Config.RUNTIME_VERSION, runtimeVersion);
   } else if (sdkVersion) {
+    /**
+     * runtime version maybe null in projects using classic updates. In that
+     * case we use SDK version
+     */
     removeMetaDataItemFromMainApplication(mainApplication, Config.RUNTIME_VERSION);
     addMetaDataItemToMainApplication(mainApplication, Config.SDK_VERSION, sdkVersion);
   } else {
@@ -204,7 +226,7 @@ export function areVersionsSynced(
   config: Pick<ExpoConfigUpdates, 'runtimeVersion' | 'sdkVersion'>,
   androidManifest: AndroidManifest
 ): boolean {
-  const expectedRuntimeVersion = getRuntimeVersion(config);
+  const expectedRuntimeVersion = getRuntimeVersionNullable(config, 'android');
   const expectedSdkVersion = getSDKVersion(config);
 
   const currentRuntimeVersion = getMainApplicationMetaDataValue(

@@ -1,3 +1,4 @@
+import { ExpoConfig } from '@expo/config-types';
 import camelCase from 'lodash/camelCase';
 import isEmpty from 'lodash/isEmpty';
 import snakeCase from 'lodash/snakeCase';
@@ -95,6 +96,21 @@ export class UserManagerInstance {
   initialize() {
     this._currentUser = null;
     this._getSessionLock = new Semaphore();
+  }
+
+  /**
+   * Get the account and project name using a user and Expo config.
+   * This will validate if the owner field is set when using a robot account.
+   */
+  getProjectOwner(user: User | RobotUser, exp: ExpoConfig): string {
+    if (user.kind === 'robot' && !exp.owner) {
+      throw new XDLError(
+        'ROBOT_OWNER_ERROR',
+        'The "owner" manifest property is required when using robot users. See: https://docs.expo.dev/versions/latest/config/app/#owner'
+      );
+    }
+
+    return exp.owner || user.username;
   }
 
   /**
@@ -387,7 +403,6 @@ export class UserManagerInstance {
     if (this._currentUser && !this._currentUser?.accessToken) {
       Analytics.logEvent('Logout', {
         userId: this._currentUser.userId,
-        username: this._currentUser.username,
         currentConnection: this._currentUser.currentConnection,
       });
     }
@@ -479,22 +494,18 @@ export class UserManagerInstance {
         Analytics.logEvent('Login', {
           userId: user.userId,
           currentConnection: user.currentConnection,
-          username: user.username,
         });
       }
 
-      UnifiedAnalytics.identifyUser(
-        user.userId, // userId is used as the identifier in the other codebases (www/website) running unified analytics so we want to keep using it on the cli as well to avoid double counting users
-        {
-          userId: user.userId,
-          currentConnection: user.currentConnection,
-          username: user.username,
-          userType: user.kind,
-          primaryAccountId: user.primaryAccountId,
-        }
-      );
+      UnifiedAnalytics.identifyUser(user.userId, {
+        userId: user.userId,
+        currentConnection: user.currentConnection,
+        username: user.username,
+        userType: user.kind,
+        primaryAccountId: user.primaryAccountId,
+      });
 
-      Analytics.identifyUser(user.username, {
+      Analytics.identifyUser(user.userId, {
         userId: user.userId,
         currentConnection: user.currentConnection,
         username: user.username,

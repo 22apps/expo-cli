@@ -1,6 +1,6 @@
 {
   "name": "@expo/configure-splash-screen",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Supplementary module for 'expo-splash-screen' providing cli configuration command",
   "bin": {
     "configure-splash-screen": "./build/index-cli.js",
@@ -33,7 +33,7 @@
   },
   "author": "650 Industries, Inc.",
   "license": "MIT",
-  "homepage": "https://github.com/expo/expo-cli/tree/master/unlinked-packages/configure-splash-screen",
+  "homepage": "https://github.com/expo/expo-cli/tree/main/unlinked-packages/configure-splash-screen",
   "engines": {
     "node": ">=12"
   },

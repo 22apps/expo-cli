@@ -1,6 +1,5 @@
 import bunyan from '@expo/bunyan';
 import { setCustomConfigPath } from '@expo/config';
-import { AssertionError } from 'assert';
 import boxen from 'boxen';
 import chalk from 'chalk';
 import program, { Command } from 'commander';
@@ -19,10 +18,10 @@ import {
   Binaries,
   Config,
   Env,
+  LoadingEvent,
   Logger,
   LogRecord,
   LogUpdater,
-  NotificationCode,
   PackagerLogsStream,
   ProjectSettings,
   ProjectUtils,
@@ -30,17 +29,17 @@ import {
   UserManager,
 } from 'xdl';
 
-import { AbortCommandError, SilentError } from './CommandError';
-import StatusEventEmitter from './StatusEventEmitter';
-import { loginOrRegisterAsync } from './accounts';
+import StatusEventEmitter from './analytics/StatusEventEmitter';
 import { registerCommands } from './commands';
+import { loginOrRegisterAsync } from './commands/auth/accounts';
 import { learnMore } from './commands/utils/TerminalLink';
 import { profileMethod } from './commands/utils/profileMethod';
+import urlOpts from './commands/utils/urlOpts';
 import Log from './log';
-import update from './update';
-import urlOpts from './urlOpts';
+import { handleErrorsAsync } from './utils/handleErrors';
 import { matchFileNameOrURLFromStackTrace } from './utils/matchFileNameOrURLFromStackTrace';
 import { logNewSection, ora } from './utils/ora';
+import update from './utils/update';
 
 // We use require() to exclude package.json from TypeScript's analysis since it lives outside the
 // src directory and would change the directory structure of the emitted files under the build
@@ -200,6 +199,7 @@ export const helpGroupOrder = [
   'auth',
   'client',
   'info',
+  'eject',
   'publish',
   'build',
   'credentials',
@@ -207,9 +207,8 @@ export const helpGroupOrder = [
   'url',
   'webhooks',
   'upload',
-  'eject',
-  'experimental',
   'internal',
+  'deprecated',
 ];
 
 function sortHelpGroups(helpGroups: Record<string, string[][]>): Record<string, string[][]> {
@@ -348,34 +347,9 @@ Command.prototype.asyncAction = function (asyncFn: Action) {
       await asyncFn(...args);
       // After a command, flush the analytics queue so the program will not have any active timers
       // This allows node js to exit immediately
-      Analytics.flush();
-      UnifiedAnalytics.flush();
+      await Promise.all([Analytics.flush(), UnifiedAnalytics.flush()]);
     } catch (err) {
-      // TODO: Find better ways to consolidate error messages
-      if (err instanceof AbortCommandError || err instanceof SilentError) {
-        // Do nothing when a prompt is cancelled or the error is logged in a pretty way.
-      } else if (err.isCommandError || err.isPluginError || err instanceof AssertionError) {
-        Log.error(err.message);
-      } else if (err._isApiError) {
-        Log.error(err.message);
-      } else if (err.isXDLError || err.isConfigError) {
-        Log.error(err.message);
-      } else if (err.isJsonFileError || err.isPackageManagerError) {
-        if (err.code === 'EJSONEMPTY') {
-          // Empty JSON is an easy bug to debug. Often this is thrown for package.json or app.json being empty.
-          Log.error(err.message);
-        } else {
-          Log.addNewLineIfNone();
-          Log.error(err.message);
-          const { formatStackTrace } = await import('./utils/formatStackTrace');
-          const stacktrace = formatStackTrace(err.stack, this.name());
-          Log.error(chalk.gray(stacktrace));
-        }
-      } else {
-        Log.error(err.message);
-        Log.error(chalk.gray(err.stack));
-      }
-
+      await handleErrorsAsync(err, { command: this.name() });
       process.exit(1);
     }
   });
@@ -424,9 +398,7 @@ Command.prototype.asyncActionProjectDir = function (
       if (opts.config === true) {
         Log.addNewLineIfNone();
         Log.log('Please specify your custom config path:');
-        Log.log(
-          Log.chalk.green(`  expo ${this.name()} --config ${Log.chalk.cyan(`<app-config>`)}`)
-        );
+        Log.log(chalk.green(`  expo ${this.name()} --config ${chalk.cyan(`<app-config>`)}`));
         Log.newLine();
         process.exit(1);
       }
@@ -435,13 +407,13 @@ Command.prototype.asyncActionProjectDir = function (
       // Warn the user when the custom config path they provided does not exist.
       if (!fs.existsSync(pathToConfig)) {
         const relativeInput = path.relative(process.cwd(), opts.config);
-        const formattedPath = Log.chalk
+        const formattedPath = chalk
           .reset(pathToConfig)
-          .replace(relativeInput, Log.chalk.bold(relativeInput));
+          .replace(relativeInput, chalk.bold(relativeInput));
         Log.addNewLineIfNone();
         Log.nestedWarn(`Custom config file does not exist:\n${formattedPath}`);
         Log.newLine();
-        const helpCommand = Log.chalk.green(`expo ${this.name()} --help`);
+        const helpCommand = chalk.green(`expo ${this.name()} --help`);
         Log.log(`Run ${helpCommand} for more info`);
         Log.newLine();
         process.exit(1);
@@ -659,25 +631,15 @@ Command.prototype.asyncActionProjectDir = function (
 };
 
 export async function bootstrapAnalyticsAsync(): Promise<void> {
-  if (Env.shouldDisableAnalytics()) {
-    return; // do not allow E2E to fire events
-  }
-
   Analytics.initializeClient(
-    'vGu92cdmVaggGA26s3lBX6Y5fILm8SQ7',
-    {
-      apiKey: '1wHTzmVgmZvNjCalKL45chlc2VN',
-      dataPlaneUrl: 'https://cdp.expo.dev',
-    },
+    '1wHTzmVgmZvNjCalKL45chlc2VN',
+    'https://cdp.expo.dev',
     packageJSON.version
   );
 
   UnifiedAnalytics.initializeClient(
-    'u4e9dmCiNpwIZTXuyZPOJE7KjCMowdx5',
-    {
-      apiKey: '1wabJGd5IiuF9Q8SGlcI90v8WTs',
-      dataPlaneUrl: 'https://cdp.expo.dev',
-    },
+    '1wabJGd5IiuF9Q8SGlcI90v8WTs',
+    'https://cdp.expo.dev',
     packageJSON.version
   );
 
@@ -714,7 +676,10 @@ async function runAsync(programName: string) {
   try {
     _registerLogs();
 
-    await bootstrapAnalyticsAsync();
+    if (Env.shouldEnableAnalytics()) {
+      await bootstrapAnalyticsAsync();
+    }
+
     UserManager.setInteractiveAuthenticationCallback(loginOrRegisterAsync);
 
     if (process.env.SERVER_URL) {
@@ -820,7 +785,7 @@ function _registerLogs() {
       write: (chunk: any) => {
         if (chunk.code) {
           switch (chunk.code) {
-            case NotificationCode.START_PROGRESS_BAR: {
+            case LoadingEvent.START_PROGRESS_BAR: {
               const bar = new ProgressBar(chunk.msg, {
                 width: 64,
                 total: 100,
@@ -831,14 +796,14 @@ function _registerLogs() {
               Log.setBundleProgressBar(bar);
               return;
             }
-            case NotificationCode.TICK_PROGRESS_BAR: {
+            case LoadingEvent.TICK_PROGRESS_BAR: {
               const bar = Log.getProgress();
               if (bar) {
                 bar.tick(1, chunk.msg);
               }
               return;
             }
-            case NotificationCode.STOP_PROGRESS_BAR: {
+            case LoadingEvent.STOP_PROGRESS_BAR: {
               const bar = Log.getProgress();
               if (bar) {
                 Log.setBundleProgressBar(null);
@@ -846,18 +811,16 @@ function _registerLogs() {
               }
               return;
             }
-            case NotificationCode.START_LOADING:
+            case LoadingEvent.START_LOADING:
               logNewSection(chunk.msg || '');
               return;
-            case NotificationCode.STOP_LOADING: {
+            case LoadingEvent.STOP_LOADING: {
               const spinner = Log.getSpinner();
               if (spinner) {
                 spinner.stop();
               }
               return;
             }
-            case NotificationCode.DOWNLOAD_CLI_PROGRESS:
-              return;
           }
         }
 

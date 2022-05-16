@@ -1,5 +1,7 @@
 import { ExpoConfig, getConfig } from '@expo/config';
+import { IOSConfig } from '@expo/config-plugins';
 import * as osascript from '@expo/osascript';
+import plist from '@expo/plist';
 import spawnAsync from '@expo/spawn-async';
 import chalk from 'chalk';
 import { execSync } from 'child_process';
@@ -16,9 +18,10 @@ import {
   CoreSimulator,
   delayAsync,
   downloadAppAsync,
+  isDevClientPackageInstalled,
   learnMore,
+  LoadingEvent,
   Logger,
-  NotificationCode,
   Prompts,
   SimControl,
   SimControlLogs,
@@ -492,26 +495,26 @@ export async function installExpoOnSimulatorAsync({
   };
 
   Logger.notifications.info(
-    { code: NotificationCode.START_PROGRESS_BAR },
+    { code: LoadingEvent.START_PROGRESS_BAR },
     'Downloading the Expo Go app [:bar] :percent :etas'
   );
 
   warningTimer = setWarningTimer();
 
   const dir = await _downloadSimulatorAppAsync(url, progress => {
-    Logger.notifications.info({ code: NotificationCode.TICK_PROGRESS_BAR }, progress);
+    Logger.notifications.info({ code: LoadingEvent.TICK_PROGRESS_BAR }, progress);
   });
 
-  Logger.notifications.info({ code: NotificationCode.STOP_PROGRESS_BAR });
+  Logger.notifications.info({ code: LoadingEvent.STOP_PROGRESS_BAR });
 
   const message = version
     ? `Installing Expo Go ${version} on ${simulator.name}`
     : `Installing Expo Go on ${simulator.name}`;
-  Logger.notifications.info({ code: NotificationCode.START_LOADING }, message);
+  Logger.notifications.info({ code: LoadingEvent.START_LOADING }, message);
   warningTimer = setWarningTimer();
 
   const result = await SimControl.installAsync({ udid: simulator.udid, dir });
-  Logger.notifications.info({ code: NotificationCode.STOP_LOADING });
+  Logger.notifications.info({ code: LoadingEvent.STOP_LOADING });
 
   clearTimeout(warningTimer);
   return result;
@@ -624,6 +627,8 @@ async function openUrlInSimulatorSafeAsync({
     } else if (!isDetached) {
       await profileMethod(ensureExpoClientInstalledAsync)(simulator, sdkVersion);
       _lastUrl = url;
+    } else if (!devClient && isDevClientPackageInstalled(projectRoot)) {
+      bundleIdentifier = ''; // it will open browser.
     }
 
     await Promise.all([
@@ -653,19 +658,11 @@ async function openUrlInSimulatorSafeAsync({
     if (e.isXDLError) {
       // Hit some internal error, don't try again.
       // This includes Xcode license errors
-      Logger.global.error(e.message);
+      // Logger.global.error(e.message);
       return {
         success: false,
         msg: `${e.toString()}`,
       };
-    }
-
-    if (isDetached) {
-      Logger.global.error(
-        `Error running app. Have you installed the app already using Xcode? Since you are detached you must build manually. ${e.toString()}`
-      );
-    } else {
-      Logger.global.error(e.message);
     }
 
     return {
@@ -749,6 +746,55 @@ async function getClientForSDK(sdkVersionString?: string) {
   };
 }
 
+export async function resolveApplicationIdAsync(projectRoot: string) {
+  // Check xcode project
+  try {
+    const bundleId = await IOSConfig.BundleIdentifier.getBundleIdentifierFromPbxproj(projectRoot);
+    if (bundleId) {
+      return bundleId;
+    }
+  } catch {}
+
+  // Check Info.plist
+  try {
+    const infoPlistPath = IOSConfig.Paths.getInfoPlistPath(projectRoot);
+    const data = await plist.parse(fs.readFileSync(infoPlistPath, 'utf8'));
+    if (data.CFBundleIdentifier && !data.CFBundleIdentifier.startsWith('$(')) {
+      return data.CFBundleIdentifier;
+    }
+  } catch {}
+
+  // Check Expo config
+  const { exp } = getConfig(projectRoot, { skipSDKVersionRequirement: true });
+  return exp.ios?.bundleIdentifier;
+}
+
+async function constructDeepLinkAsync(
+  projectRoot: string,
+  scheme?: string,
+  devClient?: boolean
+): Promise<string | null> {
+  if (
+    process.env['EXPO_ENABLE_INTERSTITIAL_PAGE'] &&
+    !devClient &&
+    isDevClientPackageInstalled(projectRoot)
+  ) {
+    return UrlUtils.constructLoadingUrlAsync(projectRoot, 'ios', 'localhost');
+  } else {
+    try {
+      return await UrlUtils.constructDeepLinkAsync(projectRoot, {
+        // Don't pass a `hostType` or ngrok will break.
+        scheme,
+      });
+    } catch (e) {
+      if (devClient) {
+        return null;
+      }
+      throw e;
+    }
+  }
+}
+
 export async function openProjectAsync({
   projectRoot,
   shouldPrompt,
@@ -756,6 +802,7 @@ export async function openProjectAsync({
   udid,
   scheme,
   skipNativeLogs,
+  applicationId,
 }: {
   projectRoot: string;
   shouldPrompt?: boolean;
@@ -763,6 +810,7 @@ export async function openProjectAsync({
   scheme?: string;
   udid?: string;
   skipNativeLogs?: boolean;
+  applicationId?: string;
 }): Promise<
   | { success: true; url: string; udid: string; bundleIdentifier: string }
   | { success: false; error: string }
@@ -774,24 +822,70 @@ export async function openProjectAsync({
     };
   }
 
-  const projectUrl = await UrlUtils.constructDeepLinkAsync(projectRoot, {
-    hostType: 'localhost',
-    scheme,
-  });
+  const projectUrl = await constructDeepLinkAsync(projectRoot, scheme, devClient);
+  Logger.global.debug(`iOS project url: ${projectUrl}`);
 
   const { exp } = getConfig(projectRoot, {
     skipSDKVersionRequirement: true,
   });
 
   let device: SimControl.SimulatorDevice | null = null;
-  if (udid) {
-    device = await ensureSimulatorOpenAsync({ udid });
-  } else if (shouldPrompt) {
+  if (!udid && shouldPrompt) {
     const devices = await getSelectableSimulatorsAsync();
     device = await promptForSimulatorAsync(devices);
     if (!device) {
       return { success: false, error: 'escaped' };
     }
+  } else {
+    device = await ensureSimulatorOpenAsync({ udid });
+  }
+
+  // No URL, and is devClient
+  if (!projectUrl) {
+    applicationId = applicationId ?? (await resolveApplicationIdAsync(projectRoot));
+    Logger.global.debug(`Open iOS project from app id: ${applicationId}`);
+
+    if (!applicationId) {
+      return {
+        success: false,
+        error:
+          'Cannot resolve bundle identifier or URI scheme to open the native iOS app.\nBuild the native app with `expo run:ios` or `eas build -p ios`',
+      };
+    }
+
+    Logger.global.info(
+      `\u203A Opening ${chalk.underline(applicationId)} on ${chalk.bold(device.name)}`
+    );
+
+    const result = await SimControl.openBundleIdAsync({
+      udid: device.udid,
+      bundleIdentifier: applicationId,
+    }).catch(error => {
+      if ('status' in error) {
+        return error;
+      }
+      throw error;
+    });
+    if (result.status === 0) {
+      await ensureSimulatorAppRunningAsync({ udid: device?.udid });
+      activateSimulatorWindowAsync();
+    } else {
+      let errorMessage = `Couldn't open iOS app with ID "${applicationId}" on device "${device.name}".`;
+      if (result.status === 4) {
+        errorMessage += `\nThe app might not be installed, try installing it with: ${chalk.bold(
+          `expo run:ios -d ${device.udid}`
+        )}`;
+      }
+      errorMessage += chalk.gray(`\n${result.stderr}`);
+      return { success: false, error: errorMessage };
+    }
+    return {
+      success: true,
+      udid: device.udid,
+      bundleIdentifier: applicationId,
+      // TODO: Remove this hack
+      url: '',
+    };
   }
 
   const result = await profileMethod(openUrlInSimulatorSafeAsync)({

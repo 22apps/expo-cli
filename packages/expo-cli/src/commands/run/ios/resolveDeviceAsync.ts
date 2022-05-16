@@ -1,10 +1,10 @@
 import chalk from 'chalk';
-import { SimControl, Simulator } from 'xdl';
+import { AppleDevice, SimControl, Simulator } from 'xdl';
 
 import CommandError from '../../../CommandError';
 import Log from '../../../log';
-import prompt from '../../../prompts';
 import { ora } from '../../../utils/ora';
+import prompt from '../../../utils/prompts';
 import { profileMethod } from '../../utils/profileMethod';
 
 async function getBuildDestinationsAsync({ osType }: { osType?: string } = {}) {
@@ -39,14 +39,16 @@ export async function resolveDeviceAsync(
     return simulator;
   }
 
-  const spinner = ora(
-    `🔍 Finding ${device === true ? 'devices' : `device ${chalk.cyan(device)}`}`
-  ).start();
+  // Only use the spinner with xctrace since it's so slow (~2s), alternative
+  // method is very fast (~50ms) and the flicker makes it seem slower.
+  const spinner = AppleDevice.isEnabled()
+    ? null
+    : ora(`🔍 Finding ${device === true ? 'devices' : `device ${chalk.cyan(device)}`}`).start();
   let devices: (SimControl.SimulatorDevice | SimControl.XCTraceDevice)[] = await profileMethod(
     getBuildDestinationsAsync
   )({ osType }).catch(() => []);
 
-  spinner.stop();
+  spinner?.stop();
 
   if (device === true) {
     // If osType is defined, then filter out ineligible simulators.

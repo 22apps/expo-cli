@@ -38,8 +38,7 @@ export async function constructDeepLinkAsync(
   opts?: Partial<URLOptions>,
   requestHostname?: string
 ): Promise<string> {
-  const { devClient } = await ProjectSettings.getPackagerOptsAsync(projectRoot);
-
+  const { devClient } = await ProjectSettings.readAsync(projectRoot);
   if (devClient) {
     return constructDevClientUrlAsync(projectRoot, opts, requestHostname);
   } else {
@@ -64,7 +63,7 @@ export async function constructDevClientUrlAsync(
   if (opts?.scheme) {
     _scheme = opts?.scheme;
   } else {
-    const { scheme } = await ProjectSettings.getPackagerOptsAsync(projectRoot);
+    const { scheme } = await ProjectSettings.readAsync(projectRoot);
     if (!scheme || typeof scheme !== 'string') {
       throw new XDLError('NO_DEV_CLIENT_SCHEME', 'No scheme specified for development client');
     }
@@ -98,6 +97,15 @@ export async function constructLogUrlAsync(
 ): Promise<string> {
   const baseUrl = await constructUrlAsync(projectRoot, { urlType: 'http' }, false, requestHostname);
   return `${baseUrl}/logs`;
+}
+
+export async function constructLoadingUrlAsync(
+  projectRoot: string,
+  platform: 'ios' | 'android',
+  requestHostname?: string
+): Promise<string> {
+  const baseUrl = await constructUrlAsync(projectRoot, { urlType: 'http' }, false, requestHostname);
+  return `${baseUrl}/_expo/loading?platform=${platform}`;
 }
 
 export async function constructUrlWithExtensionAsync(
@@ -269,7 +277,7 @@ async function ensureOptionsAsync(
     assertValidOptions(opts);
   }
 
-  const defaultOpts = await ProjectSettings.getPackagerOptsAsync(projectRoot);
+  const defaultOpts = await ProjectSettings.readAsync(projectRoot);
   if (!opts) {
     return { urlType: null, ...defaultOpts };
   }
@@ -374,6 +382,7 @@ export async function constructUrlAsync(
         'Tunnel URL not found (it might not be ready yet), falling back to LAN URL.',
         'tunnel-url-not-found'
       );
+
       return constructUrlAsync(
         projectRoot,
         { ...opts, hostType: 'lan' },
@@ -411,7 +420,10 @@ function joinURLComponents({
   port?: string | number | null;
 }): string {
   assert(hostname, 'hostname cannot be inferred.');
-  // Android HMR breaks without this port 80
+  // Android HMR breaks without this port 80.
+  // This is because Android React Native WebSocket implementation is not spec compliant and fails without a port:
+  // `E unknown:ReactNative: java.lang.IllegalArgumentException: Invalid URL port: "-1"`
+  // Invoked first in `metro-runtime/src/modules/HMRClient.js`
   const validPort = port ?? '80';
   const validProtocol = protocol ? `${protocol}://` : '';
 

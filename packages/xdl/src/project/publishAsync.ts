@@ -68,7 +68,6 @@ export async function publishAsync(
   }
 
   Analytics.logEvent('Publish', {
-    projectRoot,
     developerTool: Config.developerTool,
   });
 
@@ -86,6 +85,7 @@ export async function publishAsync(
   // TODO: refactor this out to a function, throw error if length doesn't match
   const validPostPublishHooks: LoadedHook[] = prepareHooks(hooks, 'postPublish', projectRoot);
   const bundles = await createBundlesAsync(projectRoot, options, {
+    platforms: ['ios', 'android'],
     useDevServer: Env.shouldUseDevServer(exp),
   });
 
@@ -93,13 +93,15 @@ export async function publishAsync(
 
   await ProjectAssets.publishAssetsAsync({ projectRoot, exp, bundles });
 
-  const androidBundle = bundles.android.hermesBytecodeBundle ?? bundles.android.code;
-  const iosBundle = bundles.ios.hermesBytecodeBundle ?? bundles.ios.code;
+  const androidBundle = bundles.android?.hermesBytecodeBundle ?? bundles.android?.code!;
+  const iosBundle = bundles.ios?.hermesBytecodeBundle ?? bundles.ios?.code!;
 
   const hasHooks = validPostPublishHooks.length > 0;
 
-  const androidSourceMap = hasHooks ? bundles.android.hermesSourcemap ?? bundles.android.map : null;
-  const iosSourceMap = hasHooks ? bundles.ios.hermesSourcemap ?? bundles.ios.map : null;
+  const androidSourceMap = hasHooks
+    ? bundles.android?.hermesSourcemap ?? bundles.android?.map ?? null
+    : null;
+  const iosSourceMap = hasHooks ? bundles.ios?.hermesSourcemap ?? bundles.ios?.map ?? null : null;
 
   let response;
   try {
@@ -122,6 +124,7 @@ export async function publishAsync(
 
   let androidManifest = {};
   let iosManifest = {};
+  const fullManifestUrl = response.url.replace('exp://', 'https://');
 
   if (
     validPostPublishHooks.length ||
@@ -156,9 +159,11 @@ export async function publishAsync(
       iosBundle,
       iosSourceMap,
       iosManifest,
+      iosManifestUrl: fullManifestUrl,
       androidBundle,
       androidSourceMap,
       androidManifest,
+      androidManifestUrl: fullManifestUrl,
       projectRoot,
       log: (msg: any) => {
         logger.global.info({ quiet: true }, msg);
@@ -175,7 +180,6 @@ export async function publishAsync(
     }
   }
 
-  const fullManifestUrl = response.url.replace('exp://', 'https://');
   await EmbeddedAssets.configureAsync({
     projectRoot,
     pkg,

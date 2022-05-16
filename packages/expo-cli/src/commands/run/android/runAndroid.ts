@@ -6,19 +6,18 @@ import path from 'path';
 import { Android, UnifiedAnalytics } from 'xdl';
 
 import CommandError from '../../../CommandError';
-import StatusEventEmitter from '../../../StatusEventEmitter';
+import StatusEventEmitter from '../../../analytics/StatusEventEmitter';
 import getDevClientProperties from '../../../analytics/getDevClientProperties';
 import Log from '../../../log';
-import { getSchemesForAndroidAsync } from '../../../schemes';
 import { promptToClearMalformedNativeProjectsAsync } from '../../eject/clearNativeFolder';
-import { prebuildAsync } from '../../eject/prebuildAsync';
+import { prebuildAsync } from '../../eject/prebuildAppAsync';
 import { installCustomExitHook } from '../../start/installExitHooks';
 import { profileMethod } from '../../utils/profileMethod';
-import { startBundlerAsync } from '../ios/startBundlerAsync';
-import { isDevMenuInstalled } from '../utils/isDevMenuInstalled';
+import { setGlobalDevClientSettingsAsync, startBundlerAsync } from '../ios/startBundlerAsync';
 import { resolvePortAsync } from '../utils/resolvePortAsync';
+import { getSchemesForAndroidAsync } from '../utils/schemes';
 import { resolveDeviceAsync } from './resolveDeviceAsync';
-import { spawnGradleAsync } from './spawnGradleAsync';
+import { assembleAsync, installAsync } from './spawnGradleAsync';
 
 type Options = {
   variant: string;
@@ -33,8 +32,9 @@ export type AndroidRunOptions = Omit<Options, 'device'> & {
   mainActivity: string;
   launchActivity: string;
   device: Android.Device;
-  variantFolder: string;
   appName: string;
+  buildType: string;
+  flavors?: string[];
 };
 
 async function resolveAndroidProjectPathAsync(projectRoot: string): Promise<string> {
@@ -102,9 +102,15 @@ async function resolveOptionsAsync(
     port = 8081;
   }
 
-  const variant = options.variant.toLowerCase();
-  const apkDirectory = Android.getAPKDirectory(projectRoot);
-  const apkVariantDirectory = path.join(apkDirectory, variant);
+  // TODO: why would this be different? Can we get the different name?
+  const appName = 'app';
+
+  const apkDirectory = path.join(projectRoot, 'android', appName, 'build', 'outputs', 'apk');
+
+  // buildDeveloperTrust -> build, developer, trust (where developer, and trust are flavors).
+  // This won't work for non-standard flavor names like "myFlavor" would be treated as "my", "flavor".
+  const [buildType, ...flavors] = options.variant.split(/(?=[A-Z])/).map(v => v.toLowerCase());
+  const buildDirectory = path.join(apkDirectory, ...flavors, buildType);
 
   return {
     ...options,
@@ -113,9 +119,10 @@ async function resolveOptionsAsync(
     mainActivity,
     launchActivity: `${packageName}/${mainActivity}`,
     packageName,
-    apkVariantDirectory,
-    variantFolder: variant,
-    appName: 'app',
+    apkVariantDirectory: buildDirectory,
+    appName,
+    buildType,
+    flavors,
   };
 }
 
@@ -133,53 +140,40 @@ export async function actionAsync(projectRoot: string, options: Options) {
 
   Log.log('\u203A Building app...');
 
-  await spawnGradleAsync({ androidProjectPath, variant: options.variant });
+  await assembleAsync({ ...props, androidProjectPath });
 
+  await setGlobalDevClientSettingsAsync(projectRoot);
   if (props.bundler) {
     await startBundlerAsync(projectRoot, {
       metroPort: props.port,
+      platforms: exp.platforms,
     });
   }
 
   const apkFile = await getInstallApkNameAsync(props.device, props);
   Log.debug(`\u203A Installing: ${apkFile}`);
 
-  const binaryPath = path.join(props.apkVariantDirectory, apkFile);
-  await Android.installOnDeviceAsync(props.device, { binaryPath });
+  if (apkFile) {
+    const binaryPath = path.join(props.apkVariantDirectory, apkFile);
+    await Android.installOnDeviceAsync(props.device, { binaryPath });
+  } else {
+    Log.log('\u203A Failed to locate binary file, installing with Gradle...');
+    await installAsync({ ...props, androidProjectPath });
+  }
 
   const schemes = await getSchemesForAndroidAsync(projectRoot);
 
-  if (
-    // If the dev-menu is installed, then deep link directly into the app so the user never sees the switcher screen.
-    isDevMenuInstalled(projectRoot) &&
-    // Ensure the app can handle custom URI schemes before attempting to deep link.
-    // This can happen when someone manually removes all URI schemes from the native app.
-    schemes.length
-  ) {
-    // TODO: set to ensure TerminalUI uses this same scheme.
-    const scheme = schemes[0];
-    Log.debug(`Deep linking into device: ${props.device.name}, using scheme: ${scheme}`);
-    const result = await Android.openProjectAsync({
-      projectRoot,
-      device: props.device,
-      devClient: true,
-      scheme,
-    });
-    if (!result.success) {
-      // TODO: Maybe fallback on using the package name.
-      throw new CommandError(
-        typeof result.error === 'string' ? result.error : result.error.message
-      );
-    }
-  } else {
-    Log.debug(
-      `Opening app on device via package name: ${props.device.name}. Launch: ${props.launchActivity}`
-    );
-    // For now, just open the app with a matching package name
-    await Android.startAdbReverseAsync(projectRoot);
-    await Android.openAppAsync(props.device, {
-      launchActivity: props.launchActivity,
-    });
+  const result = await Android.openProjectAsync({
+    projectRoot,
+    device: props.device,
+    devClient: true,
+    scheme: schemes[0],
+    applicationId: props.packageName,
+    launchActivity: props.launchActivity,
+  });
+
+  if (!result.success) {
+    throw new CommandError(typeof result.error === 'string' ? result.error : result.error.message);
   }
 
   if (props.bundler) {
@@ -224,9 +218,10 @@ async function getInstallApkNameAsync(
   device: Android.Device,
   {
     appName,
-    variantFolder,
+    buildType,
+    flavors,
     apkVariantDirectory,
-  }: Pick<AndroidRunOptions, 'appName' | 'variantFolder' | 'apkVariantDirectory'>
+  }: Pick<AndroidRunOptions, 'appName' | 'flavors' | 'buildType' | 'apkVariantDirectory'>
 ) {
   const availableCPUs = await Android.getDeviceABIsAsync(device);
   availableCPUs.push(Android.DeviceABI.universal);
@@ -236,17 +231,35 @@ async function getInstallApkNameAsync(
 
   // Check for cpu specific builds first
   for (const availableCPU of availableCPUs) {
-    const apkName = `${appName}-${availableCPU}-${variantFolder}.apk`;
+    const apkName = getApkFileName(appName, buildType, flavors, availableCPU);
     if (fs.existsSync(path.join(apkVariantDirectory, apkName))) {
       return apkName;
     }
   }
 
   // Otherwise use the default apk named after the variant: app-debug.apk
-  const apkName = `${appName}-${variantFolder}.apk`;
+  const apkName = getApkFileName(appName, buildType, flavors);
   if (fs.existsSync(path.join(apkVariantDirectory, apkName))) {
     return apkName;
   }
 
-  throw new CommandError(`Failed to resolve APK build file in folder "${apkVariantDirectory}"`);
+  return null;
+}
+
+function getApkFileName(
+  appName: string,
+  buildType: string,
+  flavors?: string[] | null,
+  cpuArch?: string | null
+) {
+  let apkName = `${appName}-`;
+  if (flavors) {
+    apkName += flavors.reduce((rest, flav) => `${rest}${flav}-`, '');
+  }
+  if (cpuArch) {
+    apkName += `${cpuArch}-`;
+  }
+  apkName += `${buildType}.apk`;
+
+  return apkName;
 }

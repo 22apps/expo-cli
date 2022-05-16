@@ -6,7 +6,6 @@ import chalk from 'chalk';
 import child_process, { execFileSync } from 'child_process';
 import trim from 'lodash/trim';
 import os from 'os';
-import path from 'path';
 import prompts from 'prompts';
 import semver from 'semver';
 
@@ -16,14 +15,16 @@ import {
   downloadApkAsync,
   Env,
   ImageUtils,
+  isDevClientPackageInstalled,
   learnMore,
+  LoadingEvent,
   Logger,
-  NotificationCode,
   ProjectSettings,
   Prompts,
   UrlUtils,
   Versions,
   Webpack,
+  XDLError,
 } from './internal';
 
 export type Device = {
@@ -300,7 +301,7 @@ export async function getAdbOutputAsync(args: string[]): Promise<string> {
   }
   try {
     const result = await spawnAsync(adb, args);
-    return result.stdout;
+    return result.output.join('\n');
   } catch (e) {
     // User pressed ctrl+c to cancel the process...
     if (e.signal === 'SIGINT') {
@@ -369,7 +370,7 @@ async function ensureDevClientInstalledAsync(device: Device, applicationId: stri
   if (!(await isInstalledAsync(device, applicationId))) {
     throw new Error(
       `The development client (${applicationId}) for this project is not installed. ` +
-        `Please build and install the client on the simulator first.\n${learnMore(
+        `Please build and install the client on the device first.\n${learnMore(
           'https://docs.expo.dev/clients/distribution-for-android/'
         )}`
     );
@@ -421,25 +422,25 @@ export async function installExpoAsync({
   };
 
   Logger.notifications.info(
-    { code: NotificationCode.START_PROGRESS_BAR },
+    { code: LoadingEvent.START_PROGRESS_BAR },
     'Downloading the Expo Go app [:bar] :percent :etas'
   );
 
   warningTimer = setWarningTimer();
   const path = await downloadApkAsync(url, progress => {
-    Logger.notifications.info({ code: NotificationCode.TICK_PROGRESS_BAR }, progress);
+    Logger.notifications.info({ code: LoadingEvent.TICK_PROGRESS_BAR }, progress);
   });
 
-  Logger.notifications.info({ code: NotificationCode.STOP_PROGRESS_BAR });
+  Logger.notifications.info({ code: LoadingEvent.STOP_PROGRESS_BAR });
 
   const message = version
     ? `Installing Expo Go ${version} on ${device.name}`
     : `Installing Expo Go on ${device.name}`;
 
-  Logger.notifications.info({ code: NotificationCode.START_LOADING }, message);
+  Logger.notifications.info({ code: LoadingEvent.START_LOADING }, message);
   warningTimer = setWarningTimer();
   const result = await installOnDeviceAsync(device, { binaryPath: path });
-  Logger.notifications.info({ code: NotificationCode.STOP_LOADING });
+  Logger.notifications.info({ code: LoadingEvent.STOP_LOADING });
 
   clearTimeout(warningTimer);
   return result;
@@ -635,8 +636,9 @@ export async function openAppAsync(
     )
   );
 
-  if (openProject.includes(CANT_START_ACTIVITY_ERROR)) {
-    throw new Error(openProject.substring(openProject.indexOf('Error: ')));
+  // App is not installed or main activity cannot be found
+  if (openProject.match(/Error: Activity class .* does not exist./g)) {
+    throw new XDLError('APP_NOT_INSTALLED', openProject.substring(openProject.indexOf('Error: ')));
   }
 
   await activateEmulatorWindowAsync(device);
@@ -697,22 +699,19 @@ async function openUrlAsync({
   exp?: ExpoConfig;
   projectRoot: string;
 }): Promise<void> {
+  const bootedDevice = await attemptToStartEmulatorOrAssertAsync(device);
+  if (!bootedDevice) {
+    return;
+  }
+  Logger.global.info(`\u203A Opening ${chalk.underline(url)} on ${chalk.bold(bootedDevice.name)}`);
+
+  await activateEmulatorWindowAsync(bootedDevice);
+
+  device = bootedDevice;
+  let installedExpo = false;
+  let clientApplicationId = 'host.exp.exponent';
+
   try {
-    const bootedDevice = await attemptToStartEmulatorOrAssertAsync(device);
-    if (!bootedDevice) {
-      return;
-    }
-
-    Logger.global.info(
-      `\u203A Opening ${chalk.underline(url)} on ${chalk.bold(bootedDevice.name)}`
-    );
-
-    await activateEmulatorWindowAsync(bootedDevice);
-
-    device = bootedDevice;
-
-    let installedExpo = false;
-    let clientApplicationId = 'host.exp.exponent';
     if (devClient) {
       let applicationId;
       const isManaged = await isManagedProjectAsync(projectRoot);
@@ -724,7 +723,7 @@ async function openUrlAsync({
           );
         }
       } else {
-        applicationId = await AndroidConfig.Package.getApplicationIdAsync(projectRoot);
+        applicationId = await resolveApplicationIdAsync(projectRoot);
         if (!applicationId) {
           throw new Error(
             `Could not find applicationId in ${AndroidConfig.Paths.getAppBuildGradleFilePath(
@@ -807,45 +806,132 @@ async function getClientForSDK(sdkVersionString?: string) {
   };
 }
 
+export async function resolveApplicationIdAsync(projectRoot: string): Promise<string | null> {
+  try {
+    const applicationIdFromGradle = await AndroidConfig.Package.getApplicationIdAsync(projectRoot);
+    if (applicationIdFromGradle) {
+      return applicationIdFromGradle;
+    }
+  } catch {}
+
+  try {
+    const filePath = await AndroidConfig.Paths.getAndroidManifestAsync(projectRoot);
+    const androidManifest = await AndroidConfig.Manifest.readAndroidManifestAsync(filePath);
+    // Assert MainActivity defined.
+    await AndroidConfig.Manifest.getMainActivityOrThrow(androidManifest);
+    if (androidManifest.manifest?.$?.package) {
+      return androidManifest.manifest.$.package;
+    }
+  } catch {}
+
+  const { exp } = getConfig(projectRoot, { skipSDKVersionRequirement: true });
+  return exp.android?.package ?? null;
+}
+
+async function constructDeepLinkAsync(
+  projectRoot: string,
+  scheme?: string,
+  devClient?: boolean
+): Promise<string | null> {
+  if (
+    process.env['EXPO_ENABLE_INTERSTITIAL_PAGE'] &&
+    !devClient &&
+    isDevClientPackageInstalled(projectRoot)
+  ) {
+    return UrlUtils.constructLoadingUrlAsync(projectRoot, 'android');
+  } else {
+    return await UrlUtils.constructDeepLinkAsync(projectRoot, {
+      scheme,
+    }).catch(e => {
+      if (devClient) {
+        return null;
+      }
+      throw e;
+    });
+  }
+}
+
 export async function openProjectAsync({
   projectRoot,
   shouldPrompt,
   devClient = false,
   device,
   scheme,
+  applicationId,
+  launchActivity,
 }: {
   projectRoot: string;
   shouldPrompt?: boolean;
   devClient?: boolean;
   device?: Device;
   scheme?: string;
+  applicationId?: string | null;
+  launchActivity?: string;
 }): Promise<{ success: true; url: string } | { success: false; error: Error | string }> {
-  try {
-    await startAdbReverseAsync(projectRoot);
+  await startAdbReverseAsync(projectRoot);
 
-    const projectUrl = await UrlUtils.constructDeepLinkAsync(projectRoot, { scheme });
-    const { exp } = getConfig(projectRoot, {
-      skipSDKVersionRequirement: true,
-    });
+  const projectUrl = await constructDeepLinkAsync(projectRoot, scheme, devClient);
 
-    if (device) {
-      const booted = await attemptToStartEmulatorOrAssertAsync(device);
-      if (!booted) {
-        return { success: false, error: 'escaped' };
+  const { exp } = getConfig(projectRoot, {
+    skipSDKVersionRequirement: true,
+  });
+
+  // Resolve device
+  if (device) {
+    const booted = await attemptToStartEmulatorOrAssertAsync(device);
+    if (!booted) {
+      return { success: false, error: 'escaped' };
+    }
+    device = booted;
+  } else {
+    const devices = await getAllAvailableDevicesAsync();
+    let booted: Device | null = devices[0];
+    if (shouldPrompt) {
+      booted = await promptForDeviceAsync(devices);
+    }
+    if (!booted) {
+      return { success: false, error: 'escaped' };
+    }
+    device = booted;
+  }
+
+  // No URL, and is devClient
+  if (!projectUrl) {
+    if (!launchActivity) {
+      applicationId = applicationId ?? (await resolveApplicationIdAsync(projectRoot));
+      if (!applicationId) {
+        return {
+          success: false,
+          error:
+            'Cannot resolve application identifier or URI scheme to open the native Android app.\nBuild the native app with `expo run:android` or `eas build -p android`',
+        };
       }
-      device = booted;
-    } else {
-      const devices = await getAllAvailableDevicesAsync();
-      let booted: Device | null = devices[0];
-      if (shouldPrompt) {
-        booted = await promptForDeviceAsync(devices);
-      }
-      if (!booted) {
-        return { success: false, error: 'escaped' };
-      }
-      device = booted;
+      launchActivity = `${applicationId}/.MainActivity`;
     }
 
+    try {
+      await openAppAsync(device, {
+        launchActivity,
+      });
+    } catch (error) {
+      let errorMessage = `Couldn't open Android app with activity "${launchActivity}" on device "${device.name}".`;
+      if (error instanceof XDLError && error.code === 'APP_NOT_INSTALLED') {
+        errorMessage += `\nThe app might not be installed, try installing it with: ${chalk.bold(
+          `expo run:android -d ${device.name}`
+        )}`;
+      }
+      errorMessage += chalk.gray(`\n${error.message}`);
+      error.message = errorMessage;
+      return { success: false, error };
+    }
+    return {
+      success: true,
+      // TODO: Remove this hack
+      url: '',
+    };
+  }
+
+  try {
     await openUrlAsync({
       url: projectUrl,
       device,
@@ -861,7 +947,7 @@ export async function openProjectAsync({
       // Don't log anything when the user cancelled the process
       return { success: false, error: 'escaped' };
     } else {
-      Logger.global.error(`Couldn't start project on Android: ${e.message}`);
+      e.message = `Couldn't start project on Android: ${e.message}`;
     }
     return { success: false, error: e };
   }
@@ -896,8 +982,7 @@ export async function openWebProjectAsync({
     await openUrlAsync({ url: projectUrl, device, isDetached: true, projectRoot });
     return { success: true, url: projectUrl };
   } catch (e) {
-    Logger.global.error(`Couldn't open the web project on Android: ${e.message}`);
-    return { success: false, error: e };
+    return { success: false, error: `Couldn't open the web project on Android: ${e.message}` };
   }
 }
 
@@ -1220,14 +1305,6 @@ export async function getDeviceAPIVersionAsync(
     (await getPropertyForDeviceAsync(device, PROP_API_VERSION)) ??
     LOWEST_SUPPORTED_EXPO_API_VERSION;
   return parseInt(sdkVersion, 10);
-}
-
-/**
- *
- * @returns app/android/app/build/outputs/apk
- */
-export function getAPKDirectory(projectRoot: string): string {
-  return path.join(projectRoot, 'android', 'app', 'build', 'outputs', 'apk');
 }
 
 export async function getDeviceABIsAsync(

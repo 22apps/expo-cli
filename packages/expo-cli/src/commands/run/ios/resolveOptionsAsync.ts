@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import CommandError from '../../../CommandError';
 import Log from '../../../log';
-import { selectAsync } from '../../../prompts';
+import { selectAsync } from '../../../utils/prompts';
 import { profileMethod } from '../../utils/profileMethod';
 import { resolvePortAsync } from '../utils/resolvePortAsync';
 import * as XcodeBuild from './XcodeBuild';
@@ -19,6 +19,9 @@ export type Options = {
   scheme?: string;
   configuration?: XcodeConfiguration;
   bundler?: boolean;
+  install?: boolean;
+  /** Should use derived data for builds. */
+  buildCache: boolean;
 };
 
 export type ProjectInfo = {
@@ -165,6 +168,7 @@ export async function resolveOptionsAsync(
     shouldStartBundler: options.bundler ?? false,
     shouldSkipInitialBundling,
     port,
+    buildCache: options.buildCache,
     terminal: getDefaultUserTerminal(),
     scheme: resolvedScheme.name,
   };

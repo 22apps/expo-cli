@@ -17,7 +17,7 @@ export interface ExpoConfig {
    */
   slug: string;
   /**
-   * The Expo account name of the team owner, only applicable if you are enrolled in the EAS Priority Plan. If not provided, defaults to the username of the current user.
+   * The name of the Expo account that owns the project. This is useful for teams collaborating on a project. If not provided, the owner defaults to the username of the current user.
    */
   owner?: string;
   /**
@@ -39,9 +39,14 @@ export interface ExpoConfig {
   /**
    * **Note: Don't use this property unless you are sure what you're doing**
    *
-   * The runtime version associated with this manifest for bare workflow projects. If provided, this must match the version set in Expo.plist or AndroidManifest.xml.
+   * The runtime version associated with this manifest.
+   * Set this to `{"policy": "nativeVersion"}` to generate it automatically.
    */
-  runtimeVersion?: string;
+  runtimeVersion?:
+    | string
+    | {
+        policy: 'nativeVersion' | 'sdkVersion';
+      };
   /**
    * Your app version. In addition to this field, you'll also use `ios.buildNumber` and `android.versionCode` — read more about how to version your app [here](https://docs.expo.dev/distribution/app-stores/#versioning-your-app). On iOS this corresponds to `CFBundleShortVersionString`, and on Android, this corresponds to `versionName`. The required format can be found [here](https://developer.apple.com/documentation/bundleresources/information_property_list/cfbundleshortversionstring).
    */
@@ -59,11 +64,11 @@ export interface ExpoConfig {
    */
   orientation?: 'default' | 'portrait' | 'landscape';
   /**
-   * Configuration to force the app to always use the light or dark user-interface appearance, such as "dark mode", or make it automatically adapt to the system preferences. If not provided, defaults to `light`.
+   * Configuration to force the app to always use the light or dark user-interface appearance, such as "dark mode", or make it automatically adapt to the system preferences. If not provided, defaults to `light`. Requires `expo-system-ui` be installed in your project to work on Android.
    */
   userInterfaceStyle?: 'light' | 'dark' | 'automatic';
   /**
-   * The background color for your app, behind any of your React views. This is also known as the root view background color.
+   * The background color for your app, behind any of your React views. This is also known as the root view background color. Requires `expo-system-ui` be installed in your project to work on iOS.
    */
   backgroundColor?: string;
   /**
@@ -100,7 +105,7 @@ export interface ExpoConfig {
     androidCollapsedTitle?: string;
   };
   /**
-   * By default, Expo looks for the application registered with the AppRegistry as `main`. If you would like to change this, you can specify the name in this property.
+   * @deprecated By default, Expo looks for the application registered with the AppRegistry as `main`. If you would like to change this, you can specify the name in this property.
    */
   appKey?: string;
   /**
@@ -125,17 +130,17 @@ export interface ExpoConfig {
     translucent?: boolean;
   };
   /**
-   * Configuration for the bottom navigation bar on Android.
+   * Configuration for the bottom navigation bar on Android. Can be used to configure the `expo-navigation-bar` module in EAS Build.
    */
   androidNavigationBar?: {
     /**
-     * Determines how and when the navigation bar is shown. [Learn more](https://developer.android.com/training/system-ui/immersive). Valid values: `leanback`, `immersive`, `sticky-immersive`
+     * Determines how and when the navigation bar is shown. [Learn more](https://developer.android.com/training/system-ui/immersive). Requires `expo-navigation-bar` be installed in your project. Valid values: `leanback`, `immersive`, `sticky-immersive`
      *
      *  `leanback` results in the navigation bar being hidden until the first touch gesture is registered.
      *
      *  `immersive` results in the navigation bar being hidden until the user swipes up from the edge where the navigation bar is hidden.
      *
-     *  `sticky-immersive` is identical to `'immersive'` except that the navigation bar will be semi-transparent and will be hidden again after a short period of time
+     *  `sticky-immersive` is identical to `'immersive'` except that the navigation bar will be semi-transparent and will be hidden again after a short period of time.
      */
     visible?: 'leanback' | 'immersive' | 'sticky-immersive';
     /**
@@ -250,6 +255,10 @@ export interface ExpoConfig {
    */
   plugins?: (string | [] | [string] | [string, any])[];
   splash?: Splash;
+  /**
+   * Specifies the JavaScript engine for apps. Supported only on EAS Build. Defaults to `jsc`. Valid values: `hermes`, `jsc`.
+   */
+  jsEngine?: 'hermes' | 'jsc';
   ios?: IOS;
   android?: Android;
   web?: Web;
@@ -321,7 +330,7 @@ export interface IOS {
    */
   buildNumber?: string;
   /**
-   * The background color for your iOS app, behind any of your React views. Overrides the top-level `backgroundColor` key if it is present.
+   * The background color for your iOS app, behind any of your React views. Overrides the top-level `backgroundColor` key if it is present. Requires `expo-system-ui` be installed in your project to work on iOS.
    */
   backgroundColor?: string;
   /**
@@ -338,6 +347,10 @@ export interface IOS {
    * URL to your app on the Apple App Store, if you have deployed it there. This is used to link to your store page from your Expo project page if your app is public.
    */
   appStoreUrl?: string;
+  /**
+   * Enable iOS Bitcode optimizations in the native build. Accepts the name of an iOS build configuration to enable for a single configuration and disable for all others, e.g. Debug, Release. Not available in the classic 'expo build:ios' or Expo Go. Defaults to `undefined` which uses the template's predefined settings.
+   */
+  bitcode?: boolean | string;
   /**
    * Note: This property key is not included in the production manifest and will evaluate to `undefined`. It is used internally only in the build process, because it contains API keys that some may want to keep private.
    */
@@ -451,6 +464,21 @@ export interface IOS {
     tabletImage?: string;
     [k: string]: any;
   };
+  /**
+   * Specifies the JavaScript engine for iOS apps. Supported only on EAS Build. Defaults to `jsc`. Valid values: `hermes`, `jsc`.
+   */
+  jsEngine?: 'hermes' | 'jsc';
+  /**
+   * **Note: Don't use this property unless you are sure what you're doing**
+   *
+   * The runtime version associated with this manifest for the iOS platform. If provided, this will override the top level runtimeVersion key.
+   * Set this to `{"policy": "nativeVersion"}` to generate it automatically.
+   */
+  runtimeVersion?:
+    | string
+    | {
+        policy: 'nativeVersion' | 'sdkVersion';
+      };
 }
 /**
  * Configuration that is specific to the Android platform.
@@ -477,7 +505,7 @@ export interface Android {
    */
   backgroundColor?: string;
   /**
-   * Configuration to force the app to always use the light or dark user-interface appearance, such as "dark mode", or make it automatically adapt to the system preferences. If not provided, defaults to `light`.
+   * Configuration to force the app to always use the light or dark user-interface appearance, such as "dark mode", or make it automatically adapt to the system preferences. If not provided, defaults to `light`. Requires `expo-system-ui` be installed in your project to work on Android.
    */
   userInterfaceStyle?: 'light' | 'dark' | 'automatic';
   /**
@@ -674,9 +702,20 @@ export interface Android {
    */
   softwareKeyboardLayoutMode?: 'resize' | 'pan';
   /**
-   * Specifies the JavaScript engine. Supported only on EAS Build. Defaults to `jsc`. Valid values: `hermes`, `jsc`.
+   * Specifies the JavaScript engine for Android apps. Supported only on EAS Build and in Expo Go. Defaults to `jsc`. Valid values: `hermes`, `jsc`.
    */
   jsEngine?: 'hermes' | 'jsc';
+  /**
+   * **Note: Don't use this property unless you are sure what you're doing**
+   *
+   * The runtime version associated with this manifest for the Android platform. If provided, this will override the top level runtimeVersion key.
+   * Set this to `{"policy": "nativeVersion"}` to generate it automatically.
+   */
+  runtimeVersion?:
+    | string
+    | {
+        policy: 'nativeVersion' | 'sdkVersion';
+      };
 }
 export interface AndroidIntentFiltersData {
   /**
